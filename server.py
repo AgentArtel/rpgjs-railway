@@ -1,9 +1,7 @@
 import os
 from fastapi import FastAPI, HTTPException
-from fastapi.middleware.wsgi import WSGIMiddleware
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-import streamlit as st
-from streamlit.web.server import Server
 import asyncio
 from openai import AsyncOpenAI
 from supabase import Client
@@ -15,6 +13,15 @@ load_dotenv()
 # Initialize FastAPI
 app = FastAPI()
 
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 # Initialize clients
 openai_client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 supabase: Client = Client(
@@ -24,6 +31,10 @@ supabase: Client = Client(
 
 class Query(BaseModel):
     question: str
+
+@app.get("/")
+async def root():
+    return {"message": "Welcome to the Pydantic AI API"}
 
 @app.post("/api/ask")
 async def ask_question(query: Query):
