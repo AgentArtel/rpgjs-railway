@@ -6,7 +6,7 @@ import os
 import streamlit as st
 import json
 import logfire
-from supabase import Client
+from supabase import create_client
 from openai import AsyncOpenAI
 
 # Import all the message part classes
@@ -22,14 +22,14 @@ from pydantic_ai.messages import (
     RetryPromptPart,
     ModelMessagesTypeAdapter
 )
-from pydantic_ai_expert import pydantic_ai_expert, PydanticAIDeps
+from pydantic_ai_expert import rpgjs_expert, PydanticAIDeps
 
 # Load environment variables
 from dotenv import load_dotenv
 load_dotenv()
 
 openai_client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-supabase: Client = Client(
+supabase = create_client(
     os.getenv("SUPABASE_URL"),
     os.getenv("SUPABASE_SERVICE_KEY")
 )
@@ -77,10 +77,10 @@ async def run_agent_with_streaming(user_input: str):
     )
 
     # Run the agent in a stream
-    async with pydantic_ai_expert.run_stream(
+    async with rpgjs_expert.run_stream(
         user_input,
         deps=deps,
-        message_history= st.session_state.messages[:-1],  # pass entire conversation so far
+        message_history=st.session_state.messages[:-1],  # pass entire conversation so far
     ) as result:
         # We'll gather partial text to show incrementally
         partial_text = ""
@@ -105,10 +105,10 @@ async def run_agent_with_streaming(user_input: str):
 
 
 async def main():
-    st.title("Pydantic AI Agentic RAG")
-    st.write("Ask any question about Pydantic AI, the hidden truths of the beauty of this framework lie within.")
+    st.title("RPGJS Documentation Assistant")
+    st.write("Ask any question about RPGJS! I'll help you find the relevant documentation and explain it.")
 
-    # Initialize chat history in session state if not present
+    # Initialize chat history
     if "messages" not in st.session_state:
         st.session_state.messages = []
 
@@ -121,7 +121,7 @@ async def main():
                 display_message_part(part)
 
     # Chat input for the user
-    user_input = st.chat_input("What questions do you have about Pydantic AI?")
+    user_input = st.chat_input("What would you like to know about RPGJS?")
 
     if user_input:
         # We append a new request to the conversation explicitly

@@ -26,20 +26,22 @@ class PydanticAIDeps:
     openai_client: AsyncOpenAI
 
 system_prompt = """
-You are an expert at Pydantic AI - a Python AI agent framework that you have access to all the documentation to,
-including examples, an API reference, and other resources to help you build Pydantic AI agents.
+You are an expert at RPGJS - a powerful game development framework for creating web-based RPG games.
+You have access to all the RPGJS documentation, including guides, API references, and examples.
 
-Your only job is to assist with this and you don't answer other questions besides describing what you are able to do.
+Your job is to help developers build games with RPGJS by providing clear, accurate information from the documentation.
 
-Don't ask the user before taking an action, just do it. Always make sure you look at the documentation with the provided tools before answering the user's question unless you have already.
+Don't ask the user before taking an action, just do it. Always make sure you look at the documentation with the provided tools before answering
+unless you have already seen the relevant documentation.
 
 When you first look at the documentation, always start with RAG.
-Then also always check the list of available documentation pages and retrieve the content of page(s) if it'll help.
+Then check the list of available documentation pages and retrieve specific page content if it will help.
 
-Always let the user know when you didn't find the answer in the documentation or the right URL - be honest.
+Always be honest when you can't find an answer in the documentation or if a URL doesn't exist.
+Keep your responses friendly and conversational, like you're pair programming with the developer.
 """
 
-pydantic_ai_expert = Agent(
+rpgjs_expert = Agent(
     model,
     system_prompt=system_prompt,
     deps_type=PydanticAIDeps,
@@ -50,7 +52,7 @@ async def get_embedding(text: str, openai_client: AsyncOpenAI) -> List[float]:
     """Get embedding vector from OpenAI."""
     try:
         response = await openai_client.embeddings.create(
-            model="text-embedding-3-small",
+            model="text-embedding-ada-002",
             input=text
         )
         return response.data[0].embedding
@@ -58,7 +60,7 @@ async def get_embedding(text: str, openai_client: AsyncOpenAI) -> List[float]:
         print(f"Error getting embedding: {e}")
         return [0] * 1536  # Return zero vector on error
 
-@pydantic_ai_expert.tool
+@rpgjs_expert.tool
 async def retrieve_relevant_documentation(ctx: RunContext[PydanticAIDeps], user_query: str) -> str:
     """
     Retrieve relevant documentation chunks based on the query with RAG.
@@ -76,11 +78,11 @@ async def retrieve_relevant_documentation(ctx: RunContext[PydanticAIDeps], user_
         
         # Query Supabase for relevant documents
         result = ctx.deps.supabase.rpc(
-            'match_site_pages',
+            'match_rpgjs_pages',
             {
                 'query_embedding': query_embedding,
                 'match_count': 5,
-                'filter': {'source': 'pydantic_ai_docs'}
+                'filter': {}
             }
         ).execute()
         
@@ -90,33 +92,44 @@ async def retrieve_relevant_documentation(ctx: RunContext[PydanticAIDeps], user_
         # Format the results
         formatted_chunks = []
         for doc in result.data:
+            # Truncate content if it's too long
+            content = doc['content']
+            if len(content) > 300:
+                content = content[:300] + "..."
+                
             chunk_text = f"""
 # {doc['title']}
 
-{doc['content']}
+{content}
+
+🔗 Source: [{doc['url']}]({doc['url']}) (Similarity: {doc['similarity']:.2f})
 """
             formatted_chunks.append(chunk_text)
             
-        # Join all chunks with a separator
-        return "\n\n---\n\n".join(formatted_chunks)
+        # Add a summary of sources at the end
+        sources_summary = "\n\n---\n\n### 📚 Documentation Sources:\n"
+        for i, doc in enumerate(result.data, 1):
+            sources_summary += f"{i}. [{doc['url']}]({doc['url']}) (Similarity: {doc['similarity']:.2f})\n"
+            
+        # Join all chunks with a separator and add sources summary
+        return "\n\n---\n\n".join(formatted_chunks) + sources_summary
         
     except Exception as e:
         print(f"Error retrieving documentation: {e}")
         return f"Error retrieving documentation: {str(e)}"
 
-@pydantic_ai_expert.tool
+@rpgjs_expert.tool
 async def list_documentation_pages(ctx: RunContext[PydanticAIDeps]) -> List[str]:
     """
-    Retrieve a list of all available Pydantic AI documentation pages.
+    Retrieve a list of all available RPGJS documentation pages.
     
     Returns:
         List[str]: List of unique URLs for all documentation pages
     """
     try:
-        # Query Supabase for unique URLs where source is pydantic_ai_docs
-        result = ctx.deps.supabase.from_('site_pages') \
+        # Query Supabase for unique URLs
+        result = ctx.deps.supabase.from_('rpgjs_pages') \
             .select('url') \
-            .eq('metadata->>source', 'pydantic_ai_docs') \
             .execute()
         
         if not result.data:
@@ -130,7 +143,7 @@ async def list_documentation_pages(ctx: RunContext[PydanticAIDeps]) -> List[str]
         print(f"Error retrieving documentation pages: {e}")
         return []
 
-@pydantic_ai_expert.tool
+@rpgjs_expert.tool
 async def get_page_content(ctx: RunContext[PydanticAIDeps], url: str) -> str:
     """
     Retrieve the full content of a specific documentation page by combining all its chunks.
@@ -144,10 +157,9 @@ async def get_page_content(ctx: RunContext[PydanticAIDeps], url: str) -> str:
     """
     try:
         # Query Supabase for all chunks of this URL, ordered by chunk_number
-        result = ctx.deps.supabase.from_('site_pages') \
+        result = ctx.deps.supabase.from_('rpgjs_pages') \
             .select('title, content, chunk_number') \
             .eq('url', url) \
-            .eq('metadata->>source', 'pydantic_ai_docs') \
             .order('chunk_number') \
             .execute()
         
@@ -155,7 +167,7 @@ async def get_page_content(ctx: RunContext[PydanticAIDeps], url: str) -> str:
             return f"No content found for URL: {url}"
             
         # Format the page with its title and all chunks
-        page_title = result.data[0]['title'].split(' - ')[0]  # Get the main title
+        page_title = result.data[0]['title']
         formatted_content = [f"# {page_title}\n"]
         
         # Add each chunk's content

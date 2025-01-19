@@ -1,52 +1,104 @@
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
+from fastapi import FastAPI, HTTPException, Depends, Request
+from fastapi.middleware.cors import CORSMiddleware
 import os
-import asyncio
-from openai import AsyncOpenAI
-from supabase import Client
-from pydantic_ai_expert import pydantic_ai_expert, PydanticAIDeps
+from pydantic import BaseModel
+from typing import List, Optional
+import openai
+from supabase import create_client, Client
 from dotenv import load_dotenv
 
+# Load environment variables
 load_dotenv()
+
+# Initialize OpenAI
+openai.api_key = os.getenv("OPENAI_API_KEY")
+
+# Initialize Supabase
+supabase: Client = create_client(
+    os.getenv("SUPABASE_URL", ""),
+    os.getenv("SUPABASE_SERVICE_KEY", "")
+)
 
 app = FastAPI()
 
-# Initialize clients
-openai_client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-supabase: Client = Client(
-    os.getenv("SUPABASE_URL"),
-    os.getenv("SUPABASE_SERVICE_KEY")
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
-class Query(BaseModel):
-    question: str
+class Question(BaseModel):
+    query: str
 
-@app.post("/ask")
-async def ask_question(query: Query):
+def verify_token(req: Request):
+    token = req.headers.get('Authorization')
+    if not token or token.split(' ')[1] != os.getenv("API_BEARER_TOKEN"):
+        raise HTTPException(status_code=401, detail="Invalid token")
+    return token
+
+@app.post("/api/ask")
+async def ask_question(question: Question, token: str = Depends(verify_token)):
     try:
-        # Prepare dependencies
-        deps = PydanticAIDeps(
-            supabase=supabase,
-            openai_client=openai_client
+        # Get embedding for the question
+        response = openai.Embedding.create(
+            model="text-embedding-ada-002",
+            input=question.query.replace("\n", " ")
+        )
+        embedding = response.data[0].embedding
+
+        # Search for similar content in Supabase using rpgjs_pages
+        matches = supabase.rpc(
+            'match_rpgjs_pages',  # Updated function name
+            {
+                'query_embedding': embedding,
+                'match_count': 5,
+                'filter': {'source': 'rpgjs_docs'}
+            }
+        ).execute()
+
+        if not matches.data:
+            return {"answer": "I couldn't find any relevant information about that in the RPGJS documentation."}
+
+        # Prepare context from matches
+        context = "\n\n".join([
+            f"Title: {match['title']}\nContent: {match['content']}"
+            for match in matches.data
+        ])
+
+        # Generate response using GPT-4
+        messages = [
+            {"role": "system", "content": "You are an expert on RPGJS, a framework for creating RPG games in JavaScript. Answer questions based on the provided documentation context. If you're not sure about something, say so rather than making assumptions."},
+            {"role": "user", "content": f"Context from RPGJS documentation:\n\n{context}\n\nQuestion: {question.query}\n\nPlease provide a clear and accurate answer based on the RPGJS documentation context provided above."}
+        ]
+
+        chat_response = openai.ChatCompletion.create(
+            model=os.getenv("LLM_MODEL", "gpt-4"),
+            messages=messages,
+            temperature=0.7,
+            max_tokens=500
         )
 
-        # Run the agent
-        result = await pydantic_ai_expert.run(
-            query.question,
-            deps=deps,
-        )
+        return {
+            "answer": chat_response.choices[0].message.content,
+            "sources": [
+                {
+                    "title": match["title"],
+                    "url": match["url"],
+                    "similarity": match["similarity"]
+                }
+                for match in matches.data
+            ]
+        }
 
-        # Get the response text
-        response_text = ""
-        for message in result.messages:
-            if hasattr(message, 'parts'):
-                for part in message.parts:
-                    if part.part_kind == 'text':
-                        response_text += part.content
-
-        return {"response": response_text}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/health")
+async def health_check():
+    return {"status": "healthy"}
 
 if __name__ == "__main__":
     import uvicorn

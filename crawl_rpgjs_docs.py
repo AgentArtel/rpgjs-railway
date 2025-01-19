@@ -3,6 +3,7 @@ import sys
 import json
 import asyncio
 import requests
+from bs4 import BeautifulSoup
 from xml.etree import ElementTree
 from typing import List, Dict, Any
 from dataclasses import dataclass
@@ -33,50 +34,65 @@ class ProcessedChunk:
     metadata: Dict[str, Any]
     embedding: List[float]
 
-def chunk_text(text: str, chunk_size: int = 5000) -> List[str]:
-    """Split text into chunks, respecting code blocks and paragraphs."""
+def chunk_text(text: str, chunk_size: int = 1000, overlap: int = 100) -> List[str]:
+    """Split text into overlapping chunks."""
+    words = text.split()
     chunks = []
-    start = 0
-    text_length = len(text)
-
-    while start < text_length:
-        # Calculate end position
-        end = start + chunk_size
-
-        # If we're at the end of the text, just take what's left
-        if end >= text_length:
-            chunks.append(text[start:].strip())
-            break
-
-        # Try to find a code block boundary first (```)
-        chunk = text[start:end]
-        code_block = chunk.rfind('```')
-        if code_block != -1 and code_block > chunk_size * 0.3:
-            end = start + code_block
-
-        # If no code block, try to break at a paragraph
-        elif '\n\n' in chunk:
-            # Find the last paragraph break
-            last_break = chunk.rfind('\n\n')
-            if last_break > chunk_size * 0.3:  # Only break if we're past 30% of chunk_size
-                end = start + last_break
-
-        # If no paragraph break, try to break at a sentence
-        elif '. ' in chunk:
-            # Find the last sentence break
-            last_period = chunk.rfind('. ')
-            if last_period > chunk_size * 0.3:  # Only break if we're past 30% of chunk_size
-                end = start + last_period + 1
-
-        # Extract chunk and clean it up
-        chunk = text[start:end].strip()
-        if chunk:
-            chunks.append(chunk)
-
-        # Move start position for next chunk
-        start = max(start + 1, end)
-
+    for i in range(0, len(words), chunk_size - overlap):
+        chunk = " ".join(words[i:i + chunk_size])
+        chunks.append(chunk)
     return chunks
+
+def clean_text(text: str) -> str:
+    """Clean and normalize text content."""
+    # Remove multiple newlines and spaces
+    text = text.replace('\n\n', '\n')
+    text = text.replace('  ', ' ')
+    # Remove code block markers but keep the code
+    text = text.replace('```', '')
+    return text.strip()
+
+def get_doc_urls(base_url: str) -> List[str]:
+    """Get all documentation page URLs."""
+    urls = set()
+    response = requests.get(base_url)
+    soup = BeautifulSoup(response.text, 'html.parser')
+    
+    # Find all links in the navigation and content
+    for link in soup.find_all('a', href=True):
+        href = link['href']
+        # Skip external links and anchors
+        if href.startswith(('http', '#', 'mailto:', '//')):
+            continue
+            
+        # Clean up the URL
+        if href.endswith('.html'):
+            href = href[:-5]  # Remove .html extension
+        if href.endswith('/'):
+            href = href[:-1]  # Remove trailing slash
+            
+        # Add to URLs if it's a documentation page
+        if href.startswith('/'):
+            full_url = base_url + href
+            urls.add(full_url)
+            
+            # Also try to crawl this page for more links
+            try:
+                sub_response = requests.get(full_url)
+                sub_soup = BeautifulSoup(sub_response.text, 'html.parser')
+                for sub_link in sub_soup.find_all('a', href=True):
+                    sub_href = sub_link['href']
+                    if not sub_href.startswith(('http', '#', 'mailto:', '//')):
+                        if sub_href.endswith('.html'):
+                            sub_href = sub_href[:-5]
+                        if sub_href.endswith('/'):
+                            sub_href = sub_href[:-1]
+                        if sub_href.startswith('/'):
+                            urls.add(base_url + sub_href)
+            except Exception as e:
+                print(f"Error crawling {full_url}: {e}")
+                
+    return list(urls)
 
 async def get_title_and_summary(chunk: str, url: str) -> Dict[str, str]:
     """Extract title and summary using GPT-4."""
@@ -122,7 +138,7 @@ async def process_chunk(chunk: str, chunk_number: int, url: str) -> ProcessedChu
     
     # Create metadata
     metadata = {
-        "source": "pydantic_ai_docs",
+        "source": "rpgjs_docs",
         "chunk_size": len(chunk),
         "crawled_at": datetime.now(timezone.utc).isoformat(),
         "url_path": urlparse(url).path
@@ -151,7 +167,7 @@ async def insert_chunk(chunk: ProcessedChunk):
             "embedding": chunk.embedding
         }
         
-        result = supabase.table("site_pages").insert(data).execute()
+        result = supabase.table("rpgjs_pages").insert(data).execute()
         print(f"Inserted chunk {chunk.chunk_number} for {chunk.url}")
         return result
     except Exception as e:
@@ -212,28 +228,19 @@ async def crawl_parallel(urls: List[str], max_concurrent: int = 5):
     finally:
         await crawler.close()
 
-def get_pydantic_ai_docs_urls() -> List[str]:
-    """Get URLs from Pydantic AI docs sitemap."""
-    sitemap_url = "https://ai.pydantic.dev/sitemap.xml"
+def get_rpgjs_docs_urls() -> List[str]:
+    """Get URLs from RPGJS documentation."""
+    base_url = "https://docs.rpgjs.dev"
     try:
-        response = requests.get(sitemap_url)
-        response.raise_for_status()
-        
-        # Parse the XML
-        root = ElementTree.fromstring(response.content)
-        
-        # Extract all URLs from the sitemap
-        namespace = {'ns': 'http://www.sitemaps.org/schemas/sitemap/0.9'}
-        urls = [loc.text for loc in root.findall('.//ns:loc', namespace)]
-        
+        urls = get_doc_urls(base_url)
         return urls
     except Exception as e:
-        print(f"Error fetching sitemap: {e}")
+        print(f"Error fetching RPGJS documentation URLs: {e}")
         return []
 
 async def main():
-    # Get URLs from Pydantic AI docs
-    urls = get_pydantic_ai_docs_urls()
+    # Get URLs from RPGJS documentation
+    urls = get_rpgjs_docs_urls()
     if not urls:
         print("No URLs found to crawl")
         return
