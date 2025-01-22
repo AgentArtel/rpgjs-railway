@@ -1,9 +1,13 @@
--- Part 1: Enable extensions
+-- Clean existing data
+drop table if exists rpgjs_documentation;
+drop table if exists rpgjs_conversations;
+
+-- Enable required extensions
 create extension if not exists vector;
 create extension if not exists "uuid-ossp";
 
--- Part 2: Create tables if they don't exist
-create table if not exists rpgjs_documentation (
+-- Create the rpgjs_documentation table
+create table rpgjs_documentation (
     id uuid primary key default uuid_generate_v4(),
     url text not null,
     chunk_number integer not null,
@@ -21,19 +25,18 @@ create table if not exists rpgjs_documentation (
     unique(url, chunk_number)
 );
 
-create table if not exists rpgjs_conversations (
+-- Create the rpgjs_conversations table
+create table rpgjs_conversations (
     id uuid primary key default uuid_generate_v4(),
-    conversation_id text not null,
-    user_id text not null,
-    query text not null,
-    response text not null,
-    source_documents jsonb,
-    metadata jsonb,
-    created_at timestamp with time zone default now(),
-    unique(conversation_id, user_id)
+    session_id text not null,
+    question text not null,
+    answer text not null,
+    source_documents jsonb not null default '[]'::jsonb,
+    metadata jsonb not null default '{}'::jsonb,
+    created_at timestamp with time zone not null default now()
 );
 
--- Part 3: Create matching function
+-- Create a function to match documents
 create or replace function match_rpgjs_documentation(
     query_embedding vector(1536),
     match_threshold float default 0.7,
@@ -84,7 +87,8 @@ begin
 end;
 $$;
 
--- Part 4: Add indexes for better performance
+-- Add indexes for better performance
+-- Temporarily increase maintenance_work_mem for index creation
 DO $$
 BEGIN
     -- Save the current maintenance_work_mem
@@ -95,29 +99,34 @@ BEGIN
     ON rpgjs_documentation 
     USING ivfflat (embedding vector_cosine_ops) 
     WITH (lists = 100);
+    
+    -- Restore maintenance_work_mem to default
+    SET maintenance_work_mem TO '32MB';
 END $$;
 
--- Part 5: Enable RLS
+-- Create regular indexes (these don't require extra memory)
+create index if not exists rpgjs_documentation_version_idx on rpgjs_documentation(version);
+create index if not exists rpgjs_documentation_source_idx on rpgjs_documentation(source);
+create index if not exists rpgjs_documentation_url_idx on rpgjs_documentation(url);
+
+-- Add RLS policies
 alter table rpgjs_documentation enable row level security;
 alter table rpgjs_conversations enable row level security;
 
--- Part 6: Create RLS policies
-create policy "Enable read access for all users" on rpgjs_documentation
-    for select
-    to public
+create policy "Enable read access for all users"
+    on rpgjs_documentation for select
     using (true);
 
-create policy "Enable read access for all users" on rpgjs_conversations
-    for select
-    to public
+create policy "Enable read access for all users"
+    on rpgjs_conversations for select
     using (true);
 
-create policy "Enable insert access for all users" on rpgjs_documentation
-    for insert
-    to public
+create policy "Enable insert for authenticated users only"
+    on rpgjs_documentation for insert
+    to authenticated
     with check (true);
 
-create policy "Enable insert access for all users" on rpgjs_conversations
-    for insert
-    to public
+create policy "Enable insert for authenticated users only"
+    on rpgjs_conversations for insert
+    to authenticated
     with check (true);

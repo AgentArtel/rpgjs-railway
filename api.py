@@ -82,12 +82,14 @@ async def ask_question(question: Question, token: str = Depends(verify_token)):
         )
 
         return {
-            "answer": chat_response.choices[0].message.content,
-            "sources": [
+            "response": chat_response.choices[0].message.content,
+            "source_documents": [
                 {
                     "title": match["title"],
                     "url": match["url"],
-                    "similarity": match["similarity"]
+                    "content": match["content"][:200] + "..." if len(match["content"]) > 200 else match["content"],
+                    "similarity": match["similarity"],
+                    "version": match.get("metadata", {}).get("version", "latest")
                 }
                 for match in matches.data
             ]
